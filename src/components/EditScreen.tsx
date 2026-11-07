@@ -282,8 +282,8 @@ export const EditScreen: React.FC<EditScreenProps> = ({
             onDrop={handleFrameDrop}
             className={`relative rounded-xl p-2.5 sm:p-3 shadow-2xl transition-all duration-300 border ${
               isStrip
-                ? 'w-[160px] h-[410px] sm:w-[200px] sm:h-[510px]'
-                : 'w-[280px] h-[410px] sm:w-[350px] sm:h-[510px]'
+                ? 'w-[160px] h-[480px] sm:w-[200px] sm:h-[600px]'
+                : 'w-[280px] h-[420px] sm:w-[350px] sm:h-[525px]'
             } flex flex-col justify-between overflow-hidden touch-none`}
             style={{
               ...getFrameBackgroundStyle(),
@@ -652,11 +652,11 @@ export const EditScreen: React.FC<EditScreenProps> = ({
                   {subTitle}
                 </p>
               )}
-              <p className="font-extrabold text-xs sm:text-sm tracking-tight font-heading leading-tight">
+              <p className="font-extrabold text-xs sm:text-sm tracking-tight font-heading leading-tight mt-1.5">
                 {eventName}
               </p>
               {showDate && (
-                <p className="text-[8px] sm:text-[10px] opacity-75 font-mono mt-0.5">
+                <p className="text-[8px] sm:text-[10px] opacity-75 font-mono mt-1.5">
                   {dateText}
                 </p>
               )}
