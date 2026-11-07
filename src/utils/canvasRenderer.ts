@@ -352,12 +352,14 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
 
     // 2. Compute photo slots and footer metrics up front, so the photos fill
     // exactly the space left by the text block (same flow as the editor).
-    const marginX = isStrip ? 32 : 50;
-    const marginTop = isStrip ? 40 : 60;
-
     const previewWidth = isStrip ? 200 : 350;
     const previewScale = width / previewWidth;
-    const maxTextWidth = width - (isStrip ? 64 : 100);
+    // Editor frame uses `p-3` + 1px border on every side
+    const frameInset = 13 * previewScale;
+    const marginX = frameInset;
+    const marginTop = frameInset;
+
+    const maxTextWidth = width - (marginX * 2);
     const footerTopPadding = 8 * previewScale;
     const footerBottomPadding = 2 * previewScale;
     const maxFooterHeight = height * 0.22;
@@ -422,7 +424,7 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
           700,
           bodyFont,
           0.1,
-          1.3,
+          4 / 3,
           hexToRgba(frameTheme.textColor, 0.9),
           2,
           0
@@ -438,7 +440,7 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
         1.25,
         frameTheme.textColor,
         2,
-        0
+        6 * previewScale * sizeScale
       ));
 
       if (showDate) {
@@ -451,7 +453,7 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
           1.5,
           hexToRgba(frameTheme.textColor, 0.75),
           1,
-          2 * previewScale * sizeScale
+          6 * previewScale * sizeScale
         ));
       }
 
@@ -466,7 +468,7 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
     // names never push the date outside the printed frame.
     const logoBlockHeight = loadedLogo ? logoHeight + logoGap : 0;
     const availableFooterHeight =
-      maxFooterHeight - footerTopPadding - footerBottomPadding - logoBlockHeight;
+      maxFooterHeight - frameInset - footerTopPadding - footerBottomPadding - logoBlockHeight;
     let footerScale = 1;
     let footer = buildFooterSections(footerScale);
 
@@ -476,10 +478,8 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
     }
 
     const footerContentHeight = footer.height + logoBlockHeight;
-    const footerHeight = Math.min(
-      maxFooterHeight,
-      footerContentHeight + footerTopPadding + footerBottomPadding
-    );
+    const footerBoxHeight = footerContentHeight + footerTopPadding + footerBottomPadding;
+    const footerHeight = frameInset + footerBoxHeight;
     const usableHeight = height - marginTop - footerHeight;
     const usableWidth = width - (marginX * 2);
 
@@ -950,7 +950,7 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
     // Outfit event title with tight tracking, then a mono date at 75% opacity.
     // Every line uses the frame's own textColor so the output stays readable.
     ctx.save();
-    let cursorY = height - footerHeight + footerTopPadding;
+    let cursorY = height - frameInset - footerBoxHeight + footerTopPadding;
 
     if (loadedLogo) {
       ctx.drawImage(loadedLogo, (width - logoWidth) / 2, cursorY, logoWidth, logoHeight);
