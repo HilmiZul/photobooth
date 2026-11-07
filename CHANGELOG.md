@@ -2,6 +2,21 @@
 
 Semua perubahan penting pada proyek SnapBooth dicatat di file ini.
 
+## 1.0.2 - 2026-11-07
+
+### Bug Fix
+
+- Menambah jarak antar teks footer (tagline → judul acara → tanggal) agar tidak terlalu rapat, baik pada preview edit maupun hasil foto:
+  - Jarak judul acara dan tanggal diubah menjadi `6px` pada skala preview.
+  - Line-height tagline disamakan persis dengan preview (`16px` untuk font `12px`).
+- Menyamakan tinggi bingkai preview editor dengan rasio kertas hasil cetak:
+  - Strip `2x6"`: `200x600px` (mobile `160x480px`).
+  - Non-strip `4x6"`: `350x525px` (mobile `280x420px`).
+- Menyamakan inset bingkai (padding `p-3` + border) pada renderer kanvas sehingga posisi foto dan footer hasil foto identik dengan saat edit.
+- Commit:
+  - `3811754` — `update: add footer text spacing and match preview frame ratio to print output`
+  - `936b683` — `bug fix: align result footer spacing, line heights and frame inset with editor`
+
 ## 1.0.1 - 2026-11-07
 
 ### Bug Fix
