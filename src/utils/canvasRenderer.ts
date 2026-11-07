@@ -159,6 +159,95 @@ function getCanvasFilterString(filter: FilterType): string {
   }
 }
 
+// Convert a hex color into rgba so we can mirror CSS opacity without changing hue
+function hexToRgba(color: string, alpha: number): string {
+  const raw = color.trim().replace('#', '');
+  const hex = raw.length === 3 ? raw.split('').map(c => c + c).join('') : raw;
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return color;
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Measure text while honoring CSS-like letter spacing (tracking)
+function measureTrackedText(ctx: CanvasRenderingContext2D, text: string, tracking: number): number {
+  if (!tracking) return ctx.measureText(text).width;
+  let width = 0;
+  for (const char of text) width += ctx.measureText(char).width;
+  return width + tracking * Math.max(0, Array.from(text).length - 1);
+}
+
+// Draw centered text with optional letter spacing, matching the live preview
+function drawTrackedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  centerX: number,
+  y: number,
+  tracking: number
+) {
+  if (!tracking) {
+    ctx.textAlign = 'center';
+    ctx.fillText(text, centerX, y);
+    return;
+  }
+
+  const totalWidth = measureTrackedText(ctx, text, tracking);
+  let cursor = centerX - totalWidth / 2;
+  ctx.textAlign = 'left';
+  for (const char of text) {
+    ctx.fillText(char, cursor, y);
+    cursor += ctx.measureText(char).width + tracking;
+  }
+}
+
+// Word-wrap text to a maximum width so footer copy never bleeds outside the frame
+function wrapCanvasText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  tracking: number = 0
+): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (measureTrackedText(ctx, candidate, tracking) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      lines.push(current);
+      current = '';
+    }
+
+    if (measureTrackedText(ctx, word, tracking) <= maxWidth) {
+      current = word;
+      continue;
+    }
+
+    // Break an overlong single word character by character
+    let chunk = '';
+    for (const char of word) {
+      if (chunk && measureTrackedText(ctx, chunk + char, tracking) > maxWidth) {
+        lines.push(chunk);
+        chunk = char;
+      } else {
+        chunk += char;
+      }
+    }
+    current = chunk;
+  }
+
+  if (current) lines.push(current);
+  return lines;
+}
+
 // Asynchronously load an image
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -184,6 +273,11 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
     twinStrip,
     customLogoUrl
   } = options;
+
+  // Make sure the same webfonts used by the editor are ready for canvas text
+  if (typeof document !== 'undefined' && document.fonts?.ready) {
+    await document.fonts.ready;
+  }
 
   // Preload all photo images
   const loadedImages = await Promise.all(photos.map(src => loadImage(src)));
@@ -256,10 +350,136 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
     ctx.lineWidth = 4;
     ctx.strokeRect(10, 10, width - 20, height - 20);
 
-    // 2. Compute Photo Slot Rectangles for all 20 Layouts
+    // 2. Compute photo slots and footer metrics up front, so the photos fill
+    // exactly the space left by the text block (same flow as the editor).
     const marginX = isStrip ? 32 : 50;
     const marginTop = isStrip ? 40 : 60;
-    const footerHeight = 180;
+
+    const previewWidth = isStrip ? 200 : 350;
+    const previewScale = width / previewWidth;
+    const maxTextWidth = width - (isStrip ? 64 : 100);
+    const footerTopPadding = 8 * previewScale;
+    const footerBottomPadding = 2 * previewScale;
+    const maxFooterHeight = height * 0.22;
+
+    type FooterSection = {
+      lines: string[];
+      lineHeight: number;
+      tracking: number;
+      font: string;
+      color: string;
+      marginTop: number;
+    };
+
+    const buildSection = (
+      text: string,
+      baseSize: number,
+      weight: number,
+      family: string,
+      trackingEm: number,
+      lineHeightRatio: number,
+      color: string,
+      maxLines: number,
+      marginTop: number
+    ): FooterSection => {
+      let size = baseSize;
+      let lines: string[] = [];
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const tracking = trackingEm * size;
+        ctx.font = `${weight} ${size}px ${family}`;
+        lines = wrapCanvasText(ctx, text, maxTextWidth, tracking);
+        if (lines.length <= maxLines || size <= baseSize * 0.55) break;
+        size *= 0.9;
+      }
+      return {
+        lines,
+        lineHeight: size * lineHeightRatio,
+        tracking: trackingEm * size,
+        font: `${weight} ${size}px ${family}`,
+        color,
+        marginTop
+      };
+    };
+
+    const bodyFont = "'Plus Jakarta Sans', sans-serif";
+    const headingFont = "'Outfit', 'Plus Jakarta Sans', sans-serif";
+    const monoFont = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+
+    // Custom logo replaces the subtitle, exactly like the editor preview
+    const logoHeight = 28 * previewScale;
+    const logoGap = 2 * previewScale;
+    const logoWidth = loadedLogo
+      ? Math.min((loadedLogo.width / loadedLogo.height) * logoHeight, maxTextWidth)
+      : 0;
+
+    const buildFooterSections = (sizeScale: number) => {
+      const sections: FooterSection[] = [];
+
+      if (!loadedLogo) {
+        sections.push(buildSection(
+          (subTitle || 'PHOTO STUDIO • MEMORIES').toUpperCase(),
+          12 * previewScale * sizeScale,
+          700,
+          bodyFont,
+          0.1,
+          1.3,
+          hexToRgba(frameTheme.textColor, 0.9),
+          2,
+          0
+        ));
+      }
+
+      sections.push(buildSection(
+        eventName || 'SNAPBOOTH',
+        14 * previewScale * sizeScale,
+        800,
+        headingFont,
+        -0.025,
+        1.25,
+        frameTheme.textColor,
+        2,
+        0
+      ));
+
+      if (showDate) {
+        sections.push(buildSection(
+          dateText || new Date().toISOString().slice(0, 10).replace(/-/g, '.'),
+          10 * previewScale * sizeScale,
+          400,
+          monoFont,
+          0,
+          1.5,
+          hexToRgba(frameTheme.textColor, 0.75),
+          1,
+          2 * previewScale * sizeScale
+        ));
+      }
+
+      const height = sections.reduce(
+        (sum, section) => sum + section.marginTop + (section.lines.length * section.lineHeight),
+        0
+      );
+      return { sections, height };
+    };
+
+    // Shrink the whole block until it fits the footer budget, so long event
+    // names never push the date outside the printed frame.
+    const logoBlockHeight = loadedLogo ? logoHeight + logoGap : 0;
+    const availableFooterHeight =
+      maxFooterHeight - footerTopPadding - footerBottomPadding - logoBlockHeight;
+    let footerScale = 1;
+    let footer = buildFooterSections(footerScale);
+
+    while (footer.height > availableFooterHeight && footerScale > 0.55) {
+      footerScale *= 0.92;
+      footer = buildFooterSections(footerScale);
+    }
+
+    const footerContentHeight = footer.height + logoBlockHeight;
+    const footerHeight = Math.min(
+      maxFooterHeight,
+      footerContentHeight + footerTopPadding + footerBottomPadding
+    );
     const usableHeight = height - marginTop - footerHeight;
     const usableWidth = width - (marginX * 2);
 
@@ -426,6 +646,20 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
         const photoH = cardH * 0.72;
         const img = getImage(0);
         if (img) drawCoverImage(ctx, img, cardMargin + innerPad, cardMargin + innerPad, photoW, photoH, 8, filter);
+
+        // Caption inside the polaroid border, matching the editor preview
+        const scale = width / 350;
+        ctx.save();
+        ctx.fillStyle = '#27272a';
+        ctx.font = `700 ${9 * scale}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(
+          eventName || 'STUDIO PHOTO',
+          width / 2,
+          cardMargin + innerPad + photoH + ((cardH - (innerPad * 2) - photoH) / 2)
+        );
+        ctx.restore();
         break;
       }
 
@@ -461,6 +695,31 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
       case 'magazine_cover': {
         const imgMain = getImage(0);
         if (imgMain) drawCoverImage(ctx, imgMain, marginX, marginTop, usableWidth, usableHeight, 14, filter);
+
+        // "STUDIO ISSUE" badge on the top-left, matching the editor preview
+        const scale = width / 350;
+        const badgeFont = 8 * scale;
+        const badgeTracking = 0.1 * badgeFont;
+        ctx.save();
+        ctx.font = `700 ${badgeFont}px 'Plus Jakarta Sans', sans-serif`;
+        const badgeText = 'STUDIO ISSUE';
+        const badgePadX = 10 * scale;
+        const badgePadY = 5 * scale;
+        const badgeW = measureTrackedText(ctx, badgeText, badgeTracking) + (badgePadX * 2);
+        const badgeH = badgeFont + (badgePadY * 2);
+        const badgeX = marginX + (10 * scale);
+        const badgeY = marginTop + (10 * scale);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.beginPath();
+        ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 6 * scale);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = Math.max(1, 1.5 * scale);
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.textBaseline = 'middle';
+        drawTrackedText(ctx, badgeText, badgeX + (badgeW / 2), badgeY + (badgeH / 2), badgeTracking);
+        ctx.restore();
 
         // 2 Inset thumbnails in bottom corner
         const insetSize = 220;
@@ -512,23 +771,40 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
       // 17. Postage Stamp Quad
       case 'postage_stamps': {
         const gap = 36;
+        const scale = width / 350;
+        const cardPad = 12;
+        const labelSize = 7 * scale;
+        const labelSpace = labelSize + 12 * scale;
         const photoW = (usableWidth - gap) / 2;
-        const photoH = (usableHeight - gap) / 2;
+        const photoH = (usableHeight - gap - (2 * labelSpace)) / 2;
         for (let i = 0; i < 4; i++) {
           const img = getImage(i);
           if (img) {
             const col = i % 2;
             const row = Math.floor(i / 2);
             const x = marginX + col * (photoW + gap);
-            const y = marginTop + row * (photoH + gap);
+            const y = marginTop + row * (photoH + gap + labelSpace);
 
-            // Stamp border
+            // Stamp border with room for the caption, matching the editor preview
             ctx.save();
             ctx.fillStyle = '#ffffff';
-            ctx.fillRect(x - 12, y - 12, photoW + 24, photoH + 24);
+            ctx.fillRect(
+              x - cardPad,
+              y - cardPad,
+              photoW + (cardPad * 2),
+              photoH + cardPad + labelSpace
+            );
             ctx.restore();
 
             drawCoverImage(ctx, img, x, y, photoW, photoH, 4, filter);
+
+            ctx.save();
+            ctx.fillStyle = '#27272a';
+            ctx.font = `700 ${labelSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`POSTAGE #${i + 1}`, x + photoW, y + photoH + (labelSpace / 2) + 2);
+            ctx.restore();
           }
         }
         break;
@@ -571,6 +847,7 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
       // 20. 4 Mini Polaroids
       case 'quad_polaroid': {
         const gap = 36;
+        const scale = width / 350;
         const cardW = (usableWidth - gap) / 2;
         const cardH = (usableHeight - gap) / 2;
 
@@ -596,6 +873,19 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
             const pW = cardW - (pPad * 2);
             const pH = cardH * 0.72;
             drawCoverImage(ctx, img, cardX + pPad, cardY + pPad, pW, pH, 4, filter);
+
+            // Caption under each mini polaroid, as shown in the editor
+            ctx.save();
+            ctx.fillStyle = '#52525b';
+            ctx.font = `700 ${7 * scale}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(
+              `POSE #${i + 1}`,
+              cardX + (cardW / 2),
+              cardY + pPad + pH + ((cardH - pPad - pH) / 2)
+            );
+            ctx.restore();
           }
         }
         break;
@@ -656,31 +946,26 @@ export async function renderPhotoboothCanvas(options: RenderOptions): Promise<st
     });
 
     // 4. Draw Photobooth Footer / Branding
+    // Mirrors the EditScreen preview: uppercase subtitle with wide tracking,
+    // Outfit event title with tight tracking, then a mono date at 75% opacity.
+    // Every line uses the frame's own textColor so the output stays readable.
     ctx.save();
-    ctx.fillStyle = frameTheme.textColor;
-    ctx.textAlign = 'center';
+    let cursorY = height - footerHeight + footerTopPadding;
 
-    const footerCenterY = height - (footerHeight / 2) + 10;
-
-    // Custom Logo if present
     if (loadedLogo) {
-      const logoH = 45;
-      const logoW = (loadedLogo.width / loadedLogo.height) * logoH;
-      ctx.drawImage(loadedLogo, (width - logoW) / 2, footerCenterY - 45, logoW, logoH);
-    } else {
-      ctx.font = isStrip ? "700 20px 'Plus Jakarta Sans', sans-serif" : "700 26px 'Plus Jakarta Sans', sans-serif";
-      ctx.fillText(subTitle || 'PHOTO STUDIO • MEMORIES', width / 2, footerCenterY - 30);
+      ctx.drawImage(loadedLogo, (width - logoWidth) / 2, cursorY, logoWidth, logoHeight);
+      cursorY += logoHeight + logoGap;
     }
 
-    // Main Event Name
-    ctx.font = isStrip ? "800 38px 'Plus Jakarta Sans', sans-serif" : "800 48px 'Plus Jakarta Sans', sans-serif";
-    ctx.fillText(eventName || 'SNAPBOOTH', width / 2, footerCenterY + 12);
-
-    // Date
-    if (showDate) {
-      ctx.font = isStrip ? "500 16px 'Plus Jakarta Sans', monospace" : "500 20px 'Plus Jakarta Sans', monospace";
-      ctx.fillStyle = frameTheme.textColor === '#ffffff' ? 'rgba(255, 255, 255, 0.75)' : 'rgba(0, 0, 0, 0.6)';
-      ctx.fillText(dateText || new Date().toISOString().slice(0, 10).replace(/-/g, '.'), width / 2, footerCenterY + 44);
+    ctx.textBaseline = 'middle';
+    for (const section of footer.sections) {
+      cursorY += section.marginTop;
+      ctx.font = section.font;
+      ctx.fillStyle = section.color;
+      for (const line of section.lines) {
+        drawTrackedText(ctx, line, width / 2, cursorY + (section.lineHeight / 2), section.tracking);
+        cursorY += section.lineHeight;
+      }
     }
 
     ctx.restore();
